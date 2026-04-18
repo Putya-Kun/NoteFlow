@@ -1268,7 +1268,7 @@ export default function App() {
           </div>
 
         {/* Action Button - In All Notes and Trash */}
-        {viewMode !== 'settings' && (
+        {!showSettings && (
           <div className="p-4 border-t border-geo-border bg-geo-bg md:bg-transparent flex-shrink-0">
             <button 
               onClick={createNote}
@@ -1376,34 +1376,16 @@ export default function App() {
               </header>
 
               {/* Editor */}
-              <div className={`flex-1 overflow-y-auto ${isMobile ? 'px-6 py-8' : 'p-12'} ${activeNote.color} transition-colors duration-500`}>
-                <div className="max-w-3xl mx-auto space-y-6 relative min-h-[500px]">
-                  {isMobile && !activeNote.isTrash && (
-                    <div className="text-win-accent text-xs font-black uppercase tracking-widest text-right mb-4 opacity-60">
-                      EDITING
-                    </div>
-                  )}
-
-                  <div className="relative mb-12">
-                    <input 
-                      type="text" 
-                      placeholder="無題"
-                      value={activeNote.title}
-                      onChange={(e) => updateNote(activeNote.id, { title: e.target.value })}
-                      className="w-full text-4xl md:text-5xl font-black bg-transparent outline-none placeholder:text-geo-text-main/30 text-geo-text-main transition-all mb-4"
-                    />
-                    <div className="w-24 h-1.5 bg-[#A5D1F3] rounded-full"></div>
-                  </div>
-
-                  {/* Doodle Canvas Overlay - Covers entire area */}
-                  <div 
-                    className={`absolute inset-0 z-40 touch-none ${isDoodleMode ? 'pointer-events-auto cursor-crosshair' : 'pointer-events-none'}`}
-                    style={{ minHeight: '1000px' }}
-                  >
+              <div className={`flex-1 overflow-y-auto relative ${activeNote.color} transition-colors duration-500`}>
+                {/* Doodle Canvas Overlay - Covers entire area */}
+                <div 
+                  className={`absolute inset-0 z-40 touch-none ${isDoodleMode ? 'pointer-events-auto cursor-crosshair' : 'pointer-events-none'}`}
+                  style={{ minHeight: '5000px', width: '100%' }}
+                >
                   <Stage
                     ref={stageRef}
                     width={stageSize.width}
-                    height={stageSize.height}
+                    height={Math.max(stageSize.height, 5000)}
                     onMouseDown={handleMouseDown}
                     onMousemove={handleMouseMove}
                     onMouseup={handleMouseUp}
@@ -1473,6 +1455,24 @@ export default function App() {
                         {tool === 'select' && isDoodleMode && <Transformer ref={transformerRef} borderDash={[6, 2]} />}
                       </Layer>
                     </Stage>
+                  </div>
+
+                <div className={`max-w-3xl mx-auto space-y-6 relative min-h-[500px] ${isMobile ? 'px-6 py-8' : 'p-12'}`}>
+                  {isMobile && !activeNote.isTrash && (
+                    <div className="text-win-accent text-xs font-black uppercase tracking-widest text-right mb-4 opacity-60">
+                      EDITING
+                    </div>
+                  )}
+
+                  <div className="relative mb-12">
+                    <input 
+                      type="text" 
+                      placeholder="無題"
+                      value={activeNote.title}
+                      onChange={(e) => updateNote(activeNote.id, { title: e.target.value })}
+                      className="w-full text-4xl md:text-5xl font-black bg-transparent outline-none placeholder:text-geo-text-main/30 text-geo-text-main transition-all mb-4"
+                    />
+                    <div className="w-24 h-1.5 bg-[#A5D1F3] rounded-full"></div>
                   </div>
 
                   <div className={`relative ${activeNote.isTrash ? 'opacity-50' : ''} z-30`}>
