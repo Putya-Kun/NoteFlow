@@ -47,6 +47,7 @@ import {
   Sun,
   LogOut,
   LogIn,
+  User as UserIcon,
   Loader2,
   Wrench,
   Eye,
@@ -130,6 +131,7 @@ const COLORS = [
 
 export default function App() {
   const [user, loadingAuth] = useAuthState(auth);
+  const [isGuest, setIsGuest] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
   const [loadingNotes, setLoadingNotes] = useState(true);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
@@ -140,6 +142,8 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('all');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [showPinWarning, setShowPinWarning] = useState<string | null>(null);
+  const [showGuestConfirm, setShowGuestConfirm] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -149,6 +153,7 @@ export default function App() {
   const [showWordCount, setShowWordCount] = useState(false);
   const [showLineCount, setShowLineCount] = useState(false);
   const [showDoodles, setShowDoodles] = useState(true);
+  const [hideToolNames, setHideToolNames] = useState(false);
   const [systemAlert, setSystemAlert] = useState<string | null>(null);
 
   // Connection Test
@@ -310,8 +315,40 @@ export default function App() {
     filterTaps: true
   });
 
-  // Sync Notes from Firestore
+  // Sync Notes from Firestore or LocalStorage for Guest
   useEffect(() => {
+    if (isGuest) {
+      const stored = localStorage.getItem('noteflow_guest_data');
+      let localNotes: Note[] = [];
+      if (stored) {
+        try {
+          localNotes = JSON.parse(stored);
+        } catch (e) {
+          console.error("Failed to parse local notes", e);
+        }
+      }
+
+      // Ensure Welcome note exists for guest
+      const hasWelcome = localNotes.some(n => n.id === WELCOME_NOTE_ID);
+      const welcomeNote: Note = {
+        id: WELCOME_NOTE_ID,
+        title: 'ようこそ NoteFlow (ゲスト) へ',
+        content: '<p>ゲストモードをご利用中です。</p><p>このモードではデータはブラウザ（ローカル）にのみ保存され、クラウド同期は行われません。デバイスを跨いだ共有もできませんのでご注意ください。</p>',
+        updatedAt: Date.now(),
+        pinned: true,
+        color: 'bg-note-white',
+        isTrash: false,
+      };
+
+      if (!hasWelcome) {
+        localNotes = [welcomeNote, ...localNotes];
+      }
+      
+      setNotes(localNotes);
+      setLoadingNotes(false);
+      return;
+    }
+
     if (!user) {
       setNotes([]);
       setLoadingNotes(false);
@@ -358,7 +395,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isGuest]);
 
   useEffect(() => {
     if (isDarkMode) {
@@ -373,23 +410,33 @@ export default function App() {
   }, [isDarkMode]);
 
   useEffect(() => {
-    if (notes.length > 0) {
+    // ONLY save to local storage for guest mode. 
+    // Google users rely on cloud sync.
+    if (!loadingNotes && isGuest) {
       try {
-        localStorage.setItem('noteflow_notes_v2', JSON.stringify(notes));
+        localStorage.setItem('noteflow_guest_data', JSON.stringify(notes));
       } catch (err) {
         console.error("Storage limit exceeded or quota error:", err);
         setSystemAlert("データ保存容量を超えました。一部のノートや画像を削除してください。");
       }
     }
-  }, [notes]);
+  }, [notes, loadingNotes, isGuest]);
 
   const activeNote = useMemo(() => notes.find(n => n.id === selectedNoteId), [notes, selectedNoteId]);
 
+  const guestLogout = () => {
+    setIsGuest(false);
+    setNotes([]);
+    setSelectedNoteId(null);
+    // REMOVED: localStorage.removeItem('noteflow_notes_v2'); 
+    // We want guest notes to persist even after logging out, matching user behavior.
+  };
+
   const createNote = async () => {
-    if (!user) return;
+    if (!user && !isGuest) return;
     const noteId = crypto.randomUUID();
-    const newNote = {
-      userId: user.uid,
+    const newNote: Note = {
+      id: noteId,
       title: '',
       content: '',
       updatedAt: Date.now(),
@@ -398,10 +445,23 @@ export default function App() {
       isTrash: false,
     };
     
-    try {
-      await setDoc(doc(db, 'users', user.uid, 'notes', noteId), newNote);
+    if (isGuest) {
+      setNotes(prev => [newNote, ...prev]);
       setSelectedNoteId(noteId);
-      setViewMode('all');
+      setViewMode('all'); // 自動で全一覧に移動
+      setShowSettings(false); // 設定を閉じる
+      if (isMobile) setIsSidebarOpen(false);
+      return;
+    }
+
+    try {
+      await setDoc(doc(db, 'users', user!.uid, 'notes', noteId), {
+        ...newNote,
+        userId: user!.uid
+      });
+      setSelectedNoteId(noteId);
+      setViewMode('all'); // 自動で全一覧に移動
+      setShowSettings(false); // 設定を閉じる
       if (isMobile) setIsSidebarOpen(false);
     } catch (err) {
       console.error("Failed to create note", err);
@@ -409,12 +469,14 @@ export default function App() {
   };
 
   const updateNote = async (id: string, updates: Partial<Note>) => {
-    if (!user) return;
+    if (!user && !isGuest) return;
     // Optimistic UI update
     setNotes(prev => prev.map(n => n.id === id ? { ...n, ...updates, updatedAt: Date.now() } : n));
     
+    if (isGuest) return; // Managed by useEffect local storage
+
     try {
-      const noteRef = doc(db, 'users', user.uid, 'notes', id);
+      const noteRef = doc(db, 'users', user!.uid, 'notes', id);
       await setDoc(noteRef, { ...updates, updatedAt: Date.now() }, { merge: true });
     } catch (err) {
       console.error("Failed to update note", err);
@@ -435,13 +497,13 @@ export default function App() {
   };
 
   const confirmMoveToTrash = (id: string) => {
-    setNotes(prev => prev.map(n => n.id === id ? { ...n, isTrash: true, pinned: false } : n));
+    updateNote(id, { isTrash: true, pinned: false });
     if (selectedNoteId === id) setSelectedNoteId(null);
     setShowPinWarning(null);
   };
 
   const restoreNote = (id: string) => {
-    setNotes(prev => prev.map(n => n.id === id ? { ...n, isTrash: false } : n));
+    updateNote(id, { isTrash: false });
     if (selectedNoteId === id) setSelectedNoteId(null);
   };
 
@@ -450,19 +512,23 @@ export default function App() {
       setSystemAlert('このノートは削除できません。');
       return;
     }
-    if (!user) return;
+    setNotes(prev => prev.filter(n => n.id !== id));
+    setShowDeleteConfirm(null);
+    if (selectedNoteId === id) setSelectedNoteId(null);
+    
+    if (isGuest) return;
 
     try {
-      await deleteDoc(doc(db, 'users', user.uid, 'notes', id));
-      if (selectedNoteId === id) setSelectedNoteId(null);
-      setShowDeleteConfirm(null);
+      await deleteDoc(doc(db, 'users', user!.uid, 'notes', id));
     } catch (err) {
       console.error("Failed to delete note", err);
     }
   };
 
   const togglePin = (id: string) => {
-    setNotes(prev => prev.map(n => n.id === id ? { ...n, pinned: !n.pinned } : n));
+    const note = notes.find(n => n.id === id);
+    if (!note) return;
+    updateNote(id, { pinned: !note.pinned });
   };
 
   const filteredNotes = useMemo(() => {
@@ -709,10 +775,12 @@ export default function App() {
     if (quillRef.current) {
       const editor = quillRef.current.getEditor();
       
-      // We apply the format. If the editor is focused, this works as expected.
-      // If it's not focused, we apply the format but DO NOT call editor.focus(),
-      // which prevents the keyboard from popping up on mobile.
-      editor.format(name, value);
+      // Correctly revert to default font by setting to false, which is Quill's standard for removing format overrides
+      if (name === 'font' && value === 'sans-serif') {
+        editor.format('font', false);
+      } else {
+        editor.format(name, value);
+      }
       
       // Slight delay to ensure formats are updated in UI
       setTimeout(() => {
@@ -749,7 +817,7 @@ export default function App() {
   const FONTS = [
     { name: '標準', value: 'sans-serif' },
     { name: '明朝', value: 'serif' },
-    { name: '等幅', value: 'monospace' },
+    { name: 'ゴシック', value: 'monospace' },
   ];
 
   // Auth/Loading Screen
@@ -762,44 +830,120 @@ export default function App() {
     );
   }
 
-  if (!user) {
-    return (
-      <div className="fixed inset-0 bg-geo-bg flex items-center justify-center p-6 transition-colors">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full text-center space-y-8"
-        >
-          <div className="w-24 h-24 bg-win-accent rounded-[2rem] flex items-center justify-center mx-auto shadow-2xl shadow-win-accent/30 -rotate-3">
-             <PenSquare size={44} className="text-white" />
-          </div>
-          <div>
-            <h1 className="text-4xl font-black tracking-tighter text-geo-text-main mb-3 leading-none">NoteFlow Geometric</h1>
-            <p className="text-geo-text-sub font-medium leading-relaxed opacity-80 text-sm">
-               あなたの全てのメモをクラウドで安全に同期。<br />
-               どのデバイスからでも、安定した書き心地を。
-            </p>
-          </div>
-          <button 
-            onClick={() => signInWithPopup(auth, googleProvider)}
-            className="w-full flex items-center justify-center gap-4 h-16 bg-win-accent text-white rounded-2xl shadow-2xl shadow-win-accent/40 font-black text-xs uppercase tracking-[0.2em] hover:scale-[1.02] active:scale-95 transition-all"
-          >
-            <LogIn size={20} />
-            Googleでログイン
-          </button>
-          <p className="text-[10px] text-geo-text-sub uppercase tracking-widest font-bold">
-             Secure geometric synchronization powered by Google
-          </p>
-        </motion.div>
-      </div>
-    );
-  }
-
   return (
-    <div 
-      {...bind()}
-      className={`flex h-screen w-full bg-geo-bg text-geo-text-main font-sans selection:bg-[#eef7ff] overflow-hidden ${isDarkMode ? 'dark' : ''} touch-pan-y`}
-    >
+    <>
+      {!isMobile && (
+        <div className="fixed top-0 left-0 w-full h-[2px] bg-win-accent/40 z-[100] pointer-events-none"></div>
+      )}
+      <AnimatePresence mode="wait">
+        {!user && !isGuest ? (
+        <motion.div 
+          key="login"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0, scale: 0.95 }}
+          transition={{ duration: 0.4, ease: "circOut" }}
+          className="fixed inset-0 bg-geo-bg flex items-center justify-center p-6 transition-colors"
+        >
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="max-w-md w-full text-center space-y-6"
+          >
+            <div className="w-24 h-24 bg-win-accent rounded-[2rem] flex items-center justify-center mx-auto shadow-2xl shadow-win-accent/30 -rotate-3">
+               <PenSquare size={44} className="text-white" />
+            </div>
+            <div>
+              <h1 className="text-4xl font-black tracking-tighter text-geo-text-main mb-3 leading-none">NoteFlow</h1>
+              <p className="text-geo-text-sub font-medium leading-relaxed opacity-80 text-sm">
+                 あなたの全てのメモをクラウドで安全に同期。<br />
+                 どのデバイスからでも、安定した書き心地を。
+              </p>
+            </div>
+            <div className="space-y-3">
+              <button 
+                onClick={() => signInWithPopup(auth, googleProvider)}
+                className="w-full flex items-center justify-center gap-4 h-16 bg-win-accent text-white rounded-2xl shadow-2xl shadow-win-accent/40 font-black text-xs uppercase tracking-[0.2em] hover:scale-[1.02] active:scale-95 transition-all"
+              >
+                <LogIn size={20} />
+                Googleでログイン
+              </button>
+              <button 
+                onClick={() => setShowGuestConfirm(true)}
+                className="w-full flex items-center justify-center gap-4 h-16 bg-geo-bg text-geo-text-main border border-geo-border rounded-2xl font-black text-xs uppercase tracking-[0.2em] hover:scale-[1.02] active:scale-95 transition-all outline-none shadow-xl hover:shadow-win-accent/20"
+              >
+                ゲストとして使用
+              </button>
+            </div>
+            <p className="text-[10px] text-geo-text-sub uppercase tracking-widest font-bold">
+               Secure geometric synchronization powered by Google
+            </p>
+          </motion.div>
+
+          {/* Guest Mode Confirmation Modal */}
+          <AnimatePresence>
+            {showGuestConfirm && (
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[100] bg-black/40 backdrop-blur-sm flex items-center justify-center p-6"
+              >
+                <motion.div 
+                  initial={{ scale: 0.9, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.9, opacity: 0 }}
+                  className="bg-geo-bg rounded-2xl p-6 max-w-xs w-full shadow-2xl border border-geo-border text-center transition-colors"
+                >
+                  <div className="w-16 h-16 bg-win-accent/10 text-win-accent rounded-full flex items-center justify-center mx-auto mb-4">
+                    <UserIcon size={32} />
+                  </div>
+                  <h3 className="text-lg font-black text-geo-text-main mb-2">ゲストログイン</h3>
+                  <p className="text-sm text-geo-text-sub mb-6 leading-relaxed">
+                    ゲストとしてログインしますか？<br />
+                    <span className="text-win-accent font-bold">注：データはクラウドに保存されず、ブラウザ（ローカル）のみに保存されます。</span>
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    <button 
+                      onClick={() => {
+                        setIsGuest(true);
+                        setShowGuestConfirm(false);
+                      }}
+                      className="w-full py-3 px-4 rounded-xl font-black text-xs bg-win-accent text-white hover:bg-win-accent/90 shadow-lg shadow-win-accent/20 uppercase tracking-widest"
+                    >
+                      OK
+                    </button>
+                    <button 
+                      onClick={() => setShowGuestConfirm(false)}
+                      className="w-full py-3 px-4 rounded-xl font-black text-xs bg-sky-50 text-sky-600 hover:bg-sky-100 uppercase tracking-widest transition-colors"
+                    >
+                      キャンセル
+                    </button>
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
+      ) : (
+        <div key="app-container" className="fixed inset-0 z-10">
+          <motion.div 
+            key="app"
+            initial={{ opacity: 0, y: 150, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 150, scale: 0.98 }}
+            transition={{ 
+              type: "spring",
+              damping: 30,
+              stiffness: 350, // Much snappier
+              mass: 0.6
+            }}
+            className="w-full h-full"
+          >
+            <div 
+               {...bind()}
+               className={`flex h-screen w-full bg-geo-bg text-geo-text-main font-sans selection:bg-[#eef7ff] overflow-hidden ${isDarkMode ? 'dark' : ''} touch-pan-y`}
+            >
       
       {/* Mobile Backdrop */}
       <AnimatePresence>
@@ -845,15 +989,14 @@ export default function App() {
               </span>
               NoteFlow
             </h1>
-            {isMobile && (
-              <button 
-                onClick={() => setIsSidebarOpen(false)} 
-                className="p-2 hover:bg-slate-200/50 rounded-full text-geo-text-sub transition-colors"
-                aria-label="Close menu"
-              >
-                <X size={20} />
-              </button>
-            )}
+            {/* Close sidebar button for all devices */}
+            <button 
+              onClick={() => setIsSidebarOpen(false)} 
+              className="p-2 hover:bg-slate-200/50 rounded-full text-geo-text-sub transition-colors"
+              aria-label="Close menu"
+            >
+              <X size={20} />
+            </button>
           </div>
 
         {/* View Switcher/List Wrap */}
@@ -894,39 +1037,59 @@ export default function App() {
           </nav>
 
           {/* Search & Filter */}
-          <div className="p-4 flex-shrink-0 space-y-2">
-            <div className="relative group">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 transition-colors text-slate-400 group-focus-within:text-win-accent" size={16} />
-              <input 
-                type="text" 
-                placeholder={`${viewMode === 'trash' ? 'ゴミ箱を検索...' : 'ノートを検索...'}`} 
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 h-10 bg-geo-bg border border-geo-border rounded-lg text-sm outline-none transition-all shadow-sm focus:ring-1 focus:ring-win-accent placeholder:text-geo-text-sub text-geo-text-main"
-              />
-            </div>
-            
-                <div className="flex gap-1">
-                  <button
-                    onClick={() => setFilterType('none')}
-                    className={`flex-1 py-1.5 rounded-md text-[10px] font-bold border transition-all ${(filterType === 'none' && !showSettings) ? 'bg-win-accent text-white border-win-accent shadow-sm' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-100 dark:hover:bg-slate-800'}`}
-                  >
-                    すべて
-                  </button>
-                  <button
-                    onClick={() => setFilterType('week')}
-                    className={`flex-1 py-1.5 rounded-md text-[10px] font-bold border transition-all ${(filterType === 'week' && !showSettings) ? 'bg-win-accent text-white border-win-accent shadow-sm' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-100 dark:hover:bg-slate-800'}`}
-                  >
-                    今週
-                  </button>
-                  <button
-                    onClick={() => setFilterType('month')}
-                    className={`flex-1 py-1.5 rounded-md text-[10px] font-bold border transition-all ${(filterType === 'month' && !showSettings) ? 'bg-win-accent text-white border-win-accent shadow-sm' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-100 dark:hover:bg-slate-800'}`}
-                  >
-                    今月
-                  </button>
+          <AnimatePresence initial={false}>
+            {!showSettings && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="p-4 flex-shrink-0 space-y-2">
+                  <div className="relative group">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 transition-colors text-slate-400 group-focus-within:text-win-accent" size={16} />
+                    <input 
+                      type="text" 
+                      placeholder={`${viewMode === 'trash' ? 'ゴミ箱を検索...' : 'ノートを検索...'}`} 
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-10 pr-10 h-10 bg-geo-bg border border-geo-border rounded-lg text-sm outline-none transition-all shadow-sm focus:ring-1 focus:ring-win-accent placeholder:text-geo-text-sub text-geo-text-main"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-rose-500 transition-colors"
+                        aria-label="検索をクリア"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
+                  </div>
+                  
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => setFilterType('none')}
+                      className={`flex-1 py-1.5 rounded-md text-[10px] font-bold border transition-all ${filterType === 'none' ? 'bg-win-accent text-white border-win-accent shadow-sm' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                    >
+                      すべて
+                    </button>
+                    <button
+                      onClick={() => setFilterType('week')}
+                      className={`flex-1 py-1.5 rounded-md text-[10px] font-bold border transition-all ${filterType === 'week' ? 'bg-win-accent text-white border-win-accent shadow-sm' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                    >
+                      今週
+                    </button>
+                    <button
+                      onClick={() => setFilterType('month')}
+                      className={`flex-1 py-1.5 rounded-md text-[10px] font-bold border transition-all ${filterType === 'month' ? 'bg-win-accent text-white border-win-accent shadow-sm' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-100 dark:hover:bg-slate-800'}`}
+                    >
+                      今月
+                    </button>
+                  </div>
                 </div>
-          </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* List or Settings */}
           <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
@@ -934,32 +1097,57 @@ export default function App() {
               {showSettings ? (
                 <motion.div 
                   key="settings"
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
+                  initial={{ opacity: 0, y: 5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -5 }}
+                  transition={{ duration: 0.2, ease: "easeInOut" }}
                   className="p-4 space-y-6 flex-1"
                 >
                   <div>
                     <h4 className="text-[10px] font-black uppercase tracking-widest text-geo-text-sub mb-4">外観設定</h4>
-                    <div className="bg-geo-bg border border-geo-border rounded-xl p-4 flex items-center justify-between shadow-sm">
-                      <div className="flex items-center gap-3 text-geo-text-main">
-                        {isDarkMode ? <Moon size={20} className="text-win-accent" /> : <Sun size={20} className="text-win-accent" />}
-                        <div>
-                          <span className="text-sm font-bold block">ダークモード</span>
-                          <span className="text-[10px] text-geo-text-sub">目に優しい配色に切り替えます</span>
+                    <div className="space-y-3">
+                      <div className="bg-geo-bg border border-geo-border rounded-xl p-4 flex items-center justify-between shadow-sm transition-colors">
+                        <div className="flex items-center gap-3 text-geo-text-main">
+                          {isDarkMode ? <Moon size={20} className="text-win-accent" /> : <Sun size={20} className="text-win-accent" />}
+                          <div>
+                            <span className="text-sm font-bold block">ダークモード</span>
+                            <span className="text-[10px] text-geo-text-sub">目に優しい配色に切り替えます</span>
+                          </div>
                         </div>
+                        <button 
+                          onClick={() => setIsDarkMode(!isDarkMode)}
+                          className={`w-12 h-6 rounded-full relative transition-colors duration-300 ${isDarkMode ? 'bg-win-accent' : 'bg-slate-300'}`}
+                        >
+                          <motion.div 
+                            animate={{ x: isDarkMode ? 24 : 2 }}
+                            initial={false}
+                            className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
+                          />
+                        </button>
                       </div>
-                      <button 
-                        onClick={() => setIsDarkMode(!isDarkMode)}
-                        className={`w-12 h-6 rounded-full relative transition-colors duration-300 ${isDarkMode ? 'bg-win-accent' : 'bg-slate-300'}`}
-                        aria-label="ダークモード切り替え"
-                      >
-                        <motion.div 
-                          animate={{ x: isDarkMode ? 24 : 2 }}
-                          initial={false}
-                          className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
-                        />
-                      </button>
+
+                      {!isMobile && (
+                        <div className="bg-geo-bg border border-geo-border rounded-xl p-4 flex items-center justify-between shadow-sm transition-colors">
+                          <div className="flex items-center gap-3 text-geo-text-main">
+                            {hideToolNames ? <EyeOff size={20} className="text-win-accent" /> : <Eye size={20} className="text-win-accent" />}
+                            <div>
+                              <span className="text-sm font-bold block">ツール名を隠す</span>
+                              <span className="text-[10px] text-geo-text-sub">ツール名を表示せず、アイコンのみにします</span>
+                            </div>
+                          </div>
+                          <button 
+                            onClick={() => setHideToolNames(!hideToolNames)}
+                            className={`w-12 h-6 rounded-full relative transition-colors duration-300 ${hideToolNames ? 'bg-win-accent' : 'bg-slate-300'}`}
+                          >
+                            <motion.div 
+                              animate={{ x: hideToolNames ? 24 : 2 }}
+                              transition={{ duration: 0.2, ease: "easeInOut" }}
+                              initial={false}
+                              className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full shadow-sm"
+                            />
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -988,12 +1176,12 @@ export default function App() {
                           </div>
                         )}
                         <div>
-                          <p className="text-xs font-black text-geo-text-main leading-none">{user?.displayName}</p>
-                          <p className="text-[10px] text-geo-text-sub mt-1">クラウド同期中</p>
+                          <p className="text-xs font-black text-geo-text-main leading-none">{isGuest ? 'ゲストユーザー' : user?.displayName}</p>
+                          <p className="text-[10px] text-geo-text-sub mt-1">{isGuest ? 'ローカル保存のみ' : 'クラウド同期中'}</p>
                         </div>
                       </div>
                       <button 
-                        onClick={() => signOut(auth)}
+                        onClick={() => setShowLogoutConfirm(true)}
                         className="p-2 hover:bg-rose-50 dark:hover:bg-rose-900/20 text-rose-500 rounded-lg transition-colors"
                         title="ログアウト"
                       >
@@ -1079,8 +1267,8 @@ export default function App() {
           </AnimatePresence>
           </div>
 
-        {/* Action Button - Only in All Notes */}
-        {viewMode === 'all' && (
+        {/* Action Button - In All Notes and Trash */}
+        {viewMode !== 'settings' && (
           <div className="p-4 border-t border-geo-border bg-geo-bg md:bg-transparent flex-shrink-0">
             <button 
               onClick={createNote}
@@ -1120,7 +1308,7 @@ export default function App() {
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center gap-3">
-                  {(!isSidebarOpen || isMobile) && (
+                  {!isSidebarOpen && (
                     <button 
                       onClick={() => setIsSidebarOpen(true)}
                       className="p-2 text-geo-text-sub hover:bg-slate-100 dark:hover:bg-white/10 rounded-lg active:scale-90 transition-transform"
@@ -1202,7 +1390,7 @@ export default function App() {
                       placeholder="無題"
                       value={activeNote.title}
                       onChange={(e) => updateNote(activeNote.id, { title: e.target.value })}
-                      className="w-full text-4xl md:text-5xl font-black bg-transparent outline-none placeholder:text-geo-text-main/70 text-geo-text-main transition-all mb-4"
+                      className="w-full text-4xl md:text-5xl font-black bg-transparent outline-none placeholder:text-geo-text-main/30 text-geo-text-main transition-all mb-4"
                     />
                     <div className="w-24 h-1.5 bg-[#A5D1F3] rounded-full"></div>
                   </div>
@@ -1263,7 +1451,22 @@ export default function App() {
                             }} />;
                           }
                           if (el.type.startsWith('bubble')) {
-                             return <Text key={el.id} id={el.id} text={el.type === 'bubble_round' ? "Note" : "Idea"} x={el.x} y={el.y} fontSize={Math.abs(el.width!) || 40} fontStyle="bold" fill={el.color} onClick={(e) => { e.cancelBubble = true; if(tool === 'select') setSelectedId(el.id); }} onTap={(e) => { e.cancelBubble = true; if(tool === 'select') setSelectedId(el.id); }} draggable={tool === 'select' && isSelected} />;
+                             const x = el.x!;
+                             const y = el.y!;
+                             const w = Math.abs(el.width!);
+                             const h = Math.abs(el.height!);
+                             // Points for a rectangular bubble with a pointer at the bottom-left
+                             const points = [
+                               x, y,             // Top-left
+                               x + w, y,         // Top-right
+                               x + w, y + h,     // Bottom-right
+                               x + w/3, y + h,   // Pointer start
+                               x, y + h + h/3,   // Pointer tip
+                               x + w/6, y + h,   // Pointer end
+                               x, y + h,         // Bottom-left
+                               x, y              // Back to top-left
+                             ];
+                             return <Line key={el.id} id={el.id} points={points} stroke={el.color} strokeWidth={el.strokeWidth} closed={true} onClick={(e) => { e.cancelBubble = true; if(tool === 'select') setSelectedId(el.id); }} onTap={(e) => { e.cancelBubble = true; if(tool === 'select') setSelectedId(el.id); }} draggable={tool === 'select' && isSelected} onDragEnd={(e) => handleElementTransform(el.id, { x: e.target.x(), y: e.target.y() })} />;
                           }
                           return null;
                         })}
@@ -1299,7 +1502,7 @@ export default function App() {
                       formats={[
                         'header', 'font', 'size',
                         'bold', 'italic', 'underline', 'strike', 'blockquote',
-                        'list', 'bullet', 'indent',
+                        'list', 'indent',
                         'link', 'image', 'color', 'background', 'align'
                       ]}
                       className="note-quill-editor"
@@ -1330,19 +1533,45 @@ export default function App() {
                 >
                   <button 
                     onClick={() => toggleTool('text')}
+                    title="フォント"
                     className={`p-3 rounded-xl border transition-all flex items-center gap-2 font-bold text-xs uppercase tracking-widest ${showTextSettings ? 'bg-win-accent text-white border-win-accent shadow-lg' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-50 dark:hover:bg-slate-800'}`}
                   >
                     <Type size={18} />
-                    <span className="hidden sm:inline">フォント</span>
+                    <AnimatePresence initial={false}>
+                      {!hideToolNames && (
+                        <motion.span 
+                          initial={{ opacity: 0, width: 0, scale: 0.5 }}
+                          animate={{ opacity: 1, width: 'auto', scale: 1 }}
+                          exit={{ opacity: 0, width: 0, scale: 0.5 }}
+                          transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                          className="hidden sm:inline overflow-hidden whitespace-nowrap"
+                        >
+                          フォント
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
                   </button>
 
                   <div className="relative">
                     <button 
                       onClick={() => toggleTool('color')}
+                      title="背景色"
                       className={`p-3 rounded-xl border transition-all flex items-center gap-2 font-bold text-xs uppercase tracking-widest ${showColorPicker ? 'bg-win-accent text-white border-win-accent shadow-lg' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-50 dark:hover:bg-slate-800'}`}
                     >
                       <Palette size={18} />
-                      <span className="hidden sm:inline">背景色</span>
+                      <AnimatePresence initial={false}>
+                        {!hideToolNames && (
+                          <motion.span 
+                            initial={{ opacity: 0, width: 0, scale: 0.5 }}
+                            animate={{ opacity: 1, width: 'auto', scale: 1 }}
+                            exit={{ opacity: 0, width: 0, scale: 0.5 }}
+                            transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                            className="hidden sm:inline overflow-hidden whitespace-nowrap"
+                          >
+                            背景色
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
                     </button>
                     
                     <AnimatePresence>
@@ -1354,19 +1583,22 @@ export default function App() {
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, y: 10, scale: 0.95 }}
                             onClick={(e) => e.stopPropagation()}
-                            className="absolute bottom-full mb-4 left-1/2 -translate-x-1/2 bg-geo-bg border border-geo-border rounded-2xl p-3 shadow-2xl z-[60] flex gap-2"
+                            className="absolute bottom-full mb-4 left-1/2 -translate-x-1/2 bg-geo-bg border border-geo-border rounded-2xl p-4 shadow-2xl z-[60] flex flex-col gap-3 min-w-[200px]"
                           >
-                            {COLORS.map(color => (
-                              <button
-                                key={color}
-                                onPointerDown={(e) => e.preventDefault()}
-                                onClick={() => {
-                                  updateNote(activeNote.id, { color });
-                                  setShowColorPicker(false);
-                                }}
-                                className={`w-8 h-8 rounded-full border-2 transition-all hover:scale-110 active:scale-90 ${color} ${activeNote.color === color ? 'border-win-accent scale-110 shadow-md' : 'border-geo-border'}`}
-                              />
-                            ))}
+                            <h4 className="text-[10px] font-black uppercase tracking-widest text-geo-text-sub border-b border-geo-border pb-2 mb-1 text-center">背景色を選択</h4>
+                            <div className="flex gap-2 justify-center">
+                              {COLORS.map(color => (
+                                <button
+                                  key={color}
+                                  onPointerDown={(e) => e.preventDefault()}
+                                  onClick={() => {
+                                    updateNote(activeNote.id, { color });
+                                    setShowColorPicker(false);
+                                  }}
+                                  className={`w-8 h-8 rounded-full border-2 transition-all hover:scale-110 active:scale-90 ${color} ${activeNote.color === color ? 'border-win-accent scale-110 shadow-md' : 'border-geo-border'}`}
+                                />
+                              ))}
+                            </div>
                           </motion.div>
                         </>
                       )}
@@ -1375,24 +1607,66 @@ export default function App() {
 
                   <button 
                     onClick={() => toggleTool('doodle')}
+                    title={isDoodleMode ? '閉じる' : '落書き'}
                     className={`p-3 rounded-xl border transition-all flex items-center gap-2 font-bold text-xs uppercase tracking-widest ${isDoodleMode ? 'bg-win-accent text-white border-win-accent shadow-lg' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-50 dark:hover:bg-slate-800'}`}
                   >
                     <Pencil size={18} />
-                    <span className="hidden sm:inline">{isDoodleMode ? '閉じる' : '落書き'}</span>
+                    <AnimatePresence initial={false}>
+                      {!hideToolNames && (
+                        <motion.span 
+                          initial={{ opacity: 0, width: 0, scale: 0.5 }}
+                          animate={{ opacity: 1, width: 'auto', scale: 1 }}
+                          exit={{ opacity: 0, width: 0, scale: 0.5 }}
+                          transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                          className="hidden sm:inline overflow-hidden whitespace-nowrap"
+                        >
+                          {isDoodleMode ? '閉じる' : '落書き'}
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
                   </button>
 
-                  <label className="p-3 bg-geo-bg text-geo-text-sub border border-geo-border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-2 font-bold text-xs uppercase tracking-widest cursor-pointer active:scale-95">
+                  <label 
+                    title="画像"
+                    className="p-3 bg-geo-bg text-geo-text-sub border border-geo-border rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center gap-2 font-bold text-xs uppercase tracking-widest cursor-pointer active:scale-95"
+                  >
                     <ImageIcon size={18} />
-                    <span className="hidden sm:inline">画像</span>
+                    <AnimatePresence initial={false}>
+                      {!hideToolNames && (
+                        <motion.span 
+                          initial={{ opacity: 0, width: 0, scale: 0.5 }}
+                          animate={{ opacity: 1, width: 'auto', scale: 1 }}
+                          exit={{ opacity: 0, width: 0, scale: 0.5 }}
+                          transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                          className="hidden sm:inline overflow-hidden whitespace-nowrap"
+                        >
+                          画像
+                        </motion.span>
+                      )}
+                    </AnimatePresence>
                     <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
                   </label>
 
                   <div className="relative">
                     <button 
                       onClick={() => toggleTool('editor-settings')}
+                      title="エディタ設定"
                       className={`p-3 rounded-xl border transition-all flex items-center gap-2 font-bold text-xs uppercase tracking-widest ${showEditorSettings ? 'bg-win-accent text-white border-win-accent shadow-lg' : 'bg-geo-bg text-geo-text-sub border-geo-border hover:bg-slate-50 dark:hover:bg-slate-800'}`}
                     >
                       <Wrench size={18} />
+                      <AnimatePresence initial={false}>
+                        {!hideToolNames && (
+                          <motion.span 
+                            initial={{ opacity: 0, width: 0, scale: 0.5 }}
+                            animate={{ opacity: 1, width: 'auto', scale: 1 }}
+                            exit={{ opacity: 0, width: 0, scale: 0.5 }}
+                            transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                            className="hidden sm:inline overflow-hidden whitespace-nowrap"
+                          >
+                            エディタ設定
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
                     </button>
                     
                     <AnimatePresence>
@@ -1407,7 +1681,6 @@ export default function App() {
                             className="absolute bottom-full mb-4 right-0 bg-geo-bg border border-geo-border rounded-2xl p-4 shadow-2xl z-[60] min-w-[200px] flex flex-col gap-3"
                           >
                             <h4 className="text-[10px] font-black uppercase tracking-widest text-geo-text-sub border-b border-geo-border pb-2 mb-1">エディタ設定</h4>
-                            
                             <div className="flex items-center justify-between gap-4">
                               <span className="text-xs font-bold text-geo-text-main">文字数を表示</span>
                               <button 
@@ -1446,46 +1719,49 @@ export default function App() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: 20 }}
                         onClick={(e) => e.stopPropagation()}
-                        className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-geo-bg/95 backdrop-blur-xl border border-geo-border rounded-2xl shadow-2xl p-3 flex flex-wrap items-center gap-3 z-[60] max-w-[90vw]"
+                        className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-geo-bg/95 backdrop-blur-xl border border-geo-border rounded-2xl shadow-2xl p-4 flex flex-col gap-3 z-[60] max-w-[95vw] min-w-[200px]"
                       >
-                        <div className="flex bg-slate-100 dark:bg-white/10 p-1 rounded-xl">
-                          <button onClick={() => setTool('marker')} title="マーカー" className={`p-2 rounded-lg transition-colors ${tool === 'marker' ? 'bg-white dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><Pencil size={16} /></button>
-                          <button onClick={() => setTool('highlighter')} title="蛍光ペン" className={`p-2 rounded-lg transition-colors ${tool === 'highlighter' ? 'bg-white dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><Highlighter size={16} /></button>
-                          <button onClick={() => setTool('eraser')} title="消しゴム" className={`p-2 rounded-lg transition-colors ${tool === 'eraser' ? 'bg-white dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><Eraser size={16} /></button>
-                          <button onClick={() => setTool('shape')} title="図形" className={`p-2 rounded-lg transition-colors ${tool === 'shape' ? 'bg-white dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><Shapes size={16} /></button>
-                          <button onClick={() => setTool('select')} title="選択・サイズ変更" className={`p-2 rounded-lg transition-colors ${tool === 'select' ? 'bg-white dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><MousePointer2 size={16} /></button>
-                        </div>
-
-                        <div className="flex items-center gap-2 border-l pl-2">
-                           <input type="color" value={brushColor} onChange={(e) => setBrushColor(e.target.value)} className="w-8 h-8 rounded-lg cursor-pointer bg-transparent border-0" title="描画色" />
-                        </div>
-
-                        {tool === 'shape' && (
-                          <div className="flex gap-1 border-l pl-3">
-                            <button onClick={() => setShapeType('rect')} className={`p-2 ${shapeType === 'rect' ? 'text-win-accent' : ''}`}><Square size={16} /></button>
-                            <button onClick={() => setShapeType('triangle')} className={`p-2 ${shapeType === 'triangle' ? 'text-win-accent' : ''}`}><Triangle size={16} /></button>
-                            <button onClick={() => setShapeType('pentagon')} className={`p-2 ${shapeType === 'pentagon' ? 'text-win-accent' : ''}`}><Hexagon size={16} /></button>
-                            <button onClick={() => setShapeType('bubble_round')} className={`p-2 ${shapeType === 'bubble_round' ? 'text-win-accent' : ''}`}><MessageSquare size={16} /></button>
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-geo-text-sub border-b border-geo-border pb-2 mb-1">落書きツール</h4>
+                        <div className="flex flex-wrap items-center gap-3">
+                          <div className="flex bg-slate-200/50 dark:bg-black/20 p-1 rounded-xl backdrop-blur-sm">
+                            <button onClick={() => setTool('marker')} title="マーカー" className={`p-2 rounded-lg transition-colors ${tool === 'marker' ? 'bg-white/90 dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><Pencil size={16} /></button>
+                            <button onClick={() => setTool('highlighter')} title="蛍光ペン" className={`p-2 rounded-lg transition-colors ${tool === 'highlighter' ? 'bg-white/90 dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><Highlighter size={16} /></button>
+                            <button onClick={() => setTool('eraser')} title="消しゴム" className={`p-2 rounded-lg transition-colors ${tool === 'eraser' ? 'bg-white/90 dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><Eraser size={16} /></button>
+                            <button onClick={() => setTool('shape')} title="図形" className={`p-2 rounded-lg transition-colors ${tool === 'shape' ? 'bg-white/90 dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><Shapes size={16} /></button>
+                            <button onClick={() => setTool('select')} title="選択・サイズ変更" className={`p-2 rounded-lg transition-colors ${tool === 'select' ? 'bg-white/90 dark:bg-white/20 shadow-sm text-win-accent' : 'text-geo-text-sub'}`}><MousePointer2 size={16} /></button>
                           </div>
-                        )}
 
-                        <div className="flex items-center gap-2 border-l pl-3">
-                          <input type="range" min="1" max="50" value={brushWidth} onChange={(e) => setBrushWidth(Number(e.target.value))} className="w-24 accent-win-accent" />
-                        </div>
+                          <div className="flex items-center gap-2 border-l pl-2">
+                             <input type="color" value={brushColor} onChange={(e) => setBrushColor(e.target.value)} className="w-8 h-8 rounded-lg cursor-pointer bg-transparent border-0" title="描画色" />
+                          </div>
 
-                        {tool === 'select' && selectedId && (
+                          {tool === 'shape' && (
+                            <div className="flex gap-1 border-l pl-3">
+                              <button onClick={() => setShapeType('rect')} className={`p-2 ${shapeType === 'rect' ? 'text-win-accent' : ''}`}><Square size={16} /></button>
+                              <button onClick={() => setShapeType('triangle')} className={`p-2 ${shapeType === 'triangle' ? 'text-win-accent' : ''}`}><Triangle size={16} /></button>
+                              <button onClick={() => setShapeType('pentagon')} className={`p-2 ${shapeType === 'pentagon' ? 'text-win-accent' : ''}`}><Hexagon size={16} /></button>
+                              <button onClick={() => setShapeType('bubble_round')} className={`p-2 ${shapeType === 'bubble_round' ? 'text-win-accent' : ''}`}><MessageSquare size={16} /></button>
+                            </div>
+                          )}
+
                           <div className="flex items-center gap-2 border-l pl-3">
-                             <button onClick={deleteSelected} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg" title="削除"><Trash2 size={16} /></button>
+                            <input type="range" min="1" max="50" value={brushWidth} onChange={(e) => setBrushWidth(Number(e.target.value))} className="w-24 accent-win-accent" />
                           </div>
-                        )}
 
-                        <div className="flex items-center gap-1 border-l pl-3">
-                          <button onClick={() => setShowDoodles(!showDoodles)} className={`p-2 rounded-lg transition-colors ${!showDoodles ? 'text-win-accent bg-win-accent/10' : 'text-geo-text-sub hover:bg-slate-100'}`} title={showDoodles ? "非表示にする" : "表示する"}>
-                            {showDoodles ? <Eye size={16} /> : <EyeOff size={16} />}
-                          </button>
-                          <button onClick={undo} disabled={historyStep <= 0} className={`p-2 rounded-lg hover:bg-slate-100 ${historyStep <= 0 ? 'opacity-30 cursor-not-allowed' : ''}`} title="戻る"><Undo2 size={16} /></button>
-                          <button onClick={redo} disabled={historyStep >= history.length - 1} className={`p-2 rounded-lg hover:bg-slate-100 ${historyStep >= history.length - 1 ? 'opacity-30 cursor-not-allowed' : ''}`} title="進む"><Redo2 size={16} /></button>
-                          <button onClick={() => { setElements([]); saveDoodle([]); addToHistory([]); }} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg" title="すべて消去"><RotateCcw size={16} /></button>
+                          {tool === 'select' && selectedId && (
+                            <div className="flex items-center gap-2 border-l pl-3">
+                               <button onClick={deleteSelected} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg" title="削除"><Trash2 size={16} /></button>
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-1 border-l pl-3">
+                            <button onClick={() => setShowDoodles(!showDoodles)} className={`p-2 rounded-lg transition-colors ${!showDoodles ? 'text-win-accent bg-win-accent/10' : 'text-geo-text-sub hover:bg-slate-100'}`} title={showDoodles ? "非表示にする" : "表示する"}>
+                              {showDoodles ? <Eye size={16} /> : <EyeOff size={16} />}
+                            </button>
+                            <button onClick={undo} disabled={historyStep <= 0} className={`p-2 rounded-lg hover:bg-slate-100 ${historyStep <= 0 ? 'opacity-30 cursor-not-allowed' : ''}`} title="戻る"><Undo2 size={16} /></button>
+                            <button onClick={redo} disabled={historyStep >= history.length - 1} className={`p-2 rounded-lg hover:bg-slate-100 ${historyStep >= history.length - 1 ? 'opacity-30 cursor-not-allowed' : ''}`} title="進む"><Redo2 size={16} /></button>
+                            <button onClick={() => { setElements([]); saveDoodle([]); addToHistory([]); }} className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg" title="すべて消去"><RotateCcw size={16} /></button>
+                          </div>
                         </div>
                       </motion.div>
                     )}
@@ -1498,16 +1774,18 @@ export default function App() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: 20 }}
                         onClick={(e) => e.stopPropagation()}
-                        className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-geo-bg/95 backdrop-blur-xl border border-geo-border rounded-2xl shadow-2xl p-3 flex flex-wrap items-center gap-3 z-[60] max-w-[95vw]"
+                        className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-geo-bg/95 backdrop-blur-xl border border-geo-border rounded-2xl shadow-2xl p-4 flex flex-col gap-3 z-[60] max-w-[95vw] min-w-[200px]"
                       >
-                        {/* 1. Font Switch */}
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-geo-text-sub border-b border-geo-border pb-2 mb-1">フォント設定</h4>
+                        <div className="flex flex-wrap items-center gap-3">
+                          {/* 1. Font Switch */}
                         <div className="flex gap-1 bg-geo-border p-1 rounded-xl">
                           {FONTS.map(font => (
                             <button
                               key={font.value}
                               onPointerDown={(e) => e.preventDefault()}
                               onClick={() => applyFormat('font', font.value)}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${((currentFormats.font === font.value) || (!currentFormats.font && font.value === 'sans-serif')) ? 'bg-win-accent text-white shadow-lg' : 'text-geo-text-sub hover:opacity-80'}`}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${(currentFormats.font === font.value || (!currentFormats.font && font.value === 'sans-serif')) ? 'bg-win-accent text-white shadow-lg' : 'text-geo-text-sub hover:opacity-80'}`}
                             >
                               {font.name}
                             </button>
@@ -1607,9 +1885,10 @@ export default function App() {
                             title="文字色" 
                           />
                         </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 </footer>
               )}
             </motion.div>
@@ -1618,13 +1897,13 @@ export default function App() {
               <div className="w-28 h-28 rounded-[2rem] bg-win-accent flex items-center justify-center mb-10 shadow-2xl shadow-win-accent/30 -rotate-3">
                 <PenSquare size={48} strokeWidth={1.5} className="text-white" />
               </div>
-              <h2 className="text-3xl font-black text-geo-text-main mb-4 tracking-tighter leading-none">NoteFlow Geometric</h2>
+              <h2 className="text-3xl font-black text-geo-text-main mb-4 tracking-tighter leading-none">NoteFlow</h2>
               <p className="text-geo-text-sub max-w-sm text-sm font-medium leading-relaxed mb-12 px-6">
                 {viewMode === 'trash' 
                   ? '削除したメモはここに入ります。\n元に戻したり、完全に削除したりできます。'
                   : '幾何学的な安定感、OSを問わない使い心地。\nあなたのひらめきを今すぐ形に。'}
               </p>
-              {isMobile && (
+              {(!activeNote && (isMobile || !isSidebarOpen)) && (
                 <button 
                   onClick={() => setIsSidebarOpen(true)}
                   className="h-14 px-10 bg-win-accent text-white rounded-2xl shadow-2xl shadow-win-accent/40 font-black text-xs uppercase tracking-widest active:scale-95 transition-all"
@@ -1762,11 +2041,61 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* OS Decorator */}
-      {!isMobile && (
-        <div className="fixed top-0 left-0 w-full h-[2px] bg-win-accent/40 z-50 pointer-events-none"></div>
-      )}
+      {/* Logout Confirmation Modal */}
+      <AnimatePresence>
+        {showLogoutConfirm && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[130] bg-black/40 backdrop-blur-sm flex items-center justify-center p-6"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-geo-bg rounded-2xl p-6 max-w-xs w-full shadow-2xl border border-geo-border text-center transition-colors"
+            >
+              <div className="w-16 h-16 bg-rose-500/10 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                <LogOut size={32} />
+              </div>
+              <h3 className="text-lg font-black text-geo-text-main mb-2">ログアウト</h3>
+              <p className="text-sm text-geo-text-sub mb-6 leading-relaxed">
+                ログアウトしますか？<br />
+                {isGuest && <span className="text-win-accent font-bold">注：ゲストメモは次回アクセス時もこのブラウザで保持されます。</span>}
+              </p>
+              <div className="flex flex-col gap-2">
+                <button 
+                  onClick={() => {
+                    if (isGuest) {
+                      guestLogout();
+                    } else {
+                      signOut(auth);
+                    }
+                    setShowLogoutConfirm(false);
+                    setShowSettings(false);
+                  }}
+                  className="w-full py-3 px-4 rounded-xl font-black text-xs bg-rose-500 text-white hover:bg-rose-600 shadow-lg shadow-rose-200 uppercase tracking-widest"
+                >
+                  ログアウト
+                </button>
+                <button 
+                  onClick={() => setShowLogoutConfirm(false)}
+                  className="w-full py-3 px-4 rounded-xl font-black text-xs bg-sky-50 text-sky-600 hover:bg-sky-100 uppercase tracking-widest transition-colors"
+                >
+                  キャンセル
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-    </div>
+          </div>
+        </motion.div>
+      </div>
+    )}
+    </AnimatePresence>
+    </>
   );
 }
