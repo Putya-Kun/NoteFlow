@@ -1,0 +1,84 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+@import "react-quill-new/dist/quill.snow.css";
+
+@theme {
+  --font-sans: "Segoe UI", "San Francisco", "Helvetica Neue", "Inter", ui-sans-serif, system-ui, sans-serif;
+  
+  --color-win-accent: #0078d4;
+  --color-win-accent-dark: #ff9500;
+  --color-ios-accent: #ff9500;
+  --color-geo-bg: #f0f2f5;
+  --color-geo-border: #e0e0e0;
+  --color-geo-text-main: #1c1c1c;
+  --color-geo-text-sub: #666666;
+
+  --color-note-white: #ffffff;
+  --color-note-slate: #f8fafc;
+  --color-note-blue: #f0f7ff;
+  --color-note-amber: #fffbeb;
+  --color-note-rose: #fff1f2;
+  --color-note-emerald: #ecfdf5;
+}
+
+.dark {
+  --color-win-accent: var(--color-win-accent-dark);
+  --color-geo-bg: #121212;
+  --color-geo-border: #444444; /* Sharper border for better definition */
+  --color-geo-text-main: #ffffff;
+  --color-geo-text-sub: #f3f4f6;
+
+  --color-note-white: #121212; /* Matches geo-bg exactly */
+  --color-note-slate: #1c1c1e;
+  --color-note-blue: #162030;
+  --color-note-amber: #251a0e;
+  --color-note-rose: #261016;
+  --color-note-emerald: #0a251a;
+  --color-note-purple: #1a1025;
+}
+
+@layer base {
+  body {
+    -webkit-tap-highlight-color: transparent;
+    color: var(--color-geo-text-main);
+    background-color: var(--color-geo-bg);
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+}
+
+.dark body {
+  background-color: var(--color-geo-bg);
+}
+
+/* Quill Editor Customization */
+.note-quill-editor, 
+.note-quill-editor .ql-container, 
+.note-quill-editor .ql-editor,
+.note-quill-editor .ql-snow {
+  border: none !important;
+  font-family: inherit;
+  background-color: transparent !important;
+}
+.note-quill-editor .ql-container.ql-snow {
+  font-size: inherit;
+}
+.note-quill-editor .ql-editor {
+  padding: 0 !important;
+  min-height: 300px;
+  line-height: 1.6;
+  color: var(--color-geo-text-main);
+}
+.note-quill-editor .ql-editor.ql-blank::before {
+  left: 0 !important;
+  font-style: normal !important;
+  color: #ffffff !important;
+  opacity: 0.7 !important;
+}
+.note-quill-editor .ql-editor h1 { font-size: 2em; font-weight: bold; }
+.note-quill-editor .ql-editor h2 { font-size: 1.5em; font-weight: bold; }
+.note-quill-editor .ql-editor p { margin-bottom: 0.5em; }
+
+/* Font definitions for Quill */
+.ql-font-serif { font-family: serif; }
+.ql-font-monospace { font-family: monospace; }
+.ql-font-sans-serif { font-family: sans-serif; }

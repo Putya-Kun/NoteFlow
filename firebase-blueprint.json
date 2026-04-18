@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "Note": {
+      "title": "Note",
+      "description": "User note data",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "updatedAt": { "type": "number" },
+        "pinned": { "type": "boolean" },
+        "color": { "type": "string" },
+        "isTrash": { "type": "boolean" },
+        "doodleData": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "fontFamily": { "type": "string" },
+        "fontSize": { "type": "number" },
+        "textAlign": { "type": "string" }
+      },
+      "required": ["userId", "updatedAt", "color", "isTrash"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User internal settings and profile",
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "lastLogin": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile data"
+    },
+    "/users/{userId}/notes/{noteId}": {
+      "schema": "Note",
+      "description": "Individual user notes"
+    }
+  }
+}

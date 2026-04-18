@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reuseable helpers
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    // User Profiles
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create, update: if isOwner(userId) && (
+        incoming().keys().hasAll(['email']) &&
+        incoming().email is string &&
+        incoming().email == request.auth.token.email
+      );
+    }
+
+    // Connection Test Path
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // Notes Subcollection
+    match /users/{userId}/notes/{noteId} {
+      function isValidNote(data) {
+        return data.keys().hasAll(['userId', 'updatedAt', 'color', 'isTrash', 'pinned']) &&
+               data.userId == request.auth.uid &&
+               data.updatedAt is number &&
+               data.color is string &&
+               data.isTrash is bool &&
+               data.pinned is bool &&
+               (data.get('title', '') is string) &&
+               (data.get('content', '') is string);
+      }
+
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidNote(incoming()) && isValidId(noteId);
+      allow update: if isOwner(userId) && isValidNote(incoming()) && 
+                    incoming().userId == existing().userId;
+      allow delete: if isOwner(userId);
+    }
+  }
+}
